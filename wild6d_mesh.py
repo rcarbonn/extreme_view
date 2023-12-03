@@ -24,7 +24,7 @@ def calculate_2d_projections(coordinates_3d, intrinsics):
     return projected_coordinates
 
 
-def load_mesh(path_to_file):
+def load_mesh(path_to_file, rotx=True):
     """ Load obj file.
     Args:
         path_to_file: path
@@ -48,6 +48,13 @@ def load_mesh(path_to_file):
                 continue
     vertices = np.asarray(vertices)
     faces = np.asarray(faces)
+    if rotx:
+        Rx = np.array([
+            [1, 0, 0],
+            [0, -1, 0],
+            [0, 0, -1],
+        ])
+        vertices = (Rx @ vertices.T).T
     print(f"Number of vertices: {len(vertices)}, Number of faces: {len(faces)}")
     return vertices, faces
 
@@ -103,11 +110,21 @@ def handle_intersections(idx_triangles, idx_ray, locs, directions):
         intersections[idx].append((np.dot(locs[i], directions[idx]), idx_triangles[i], locs[i]))
     
     filtered_intersections = {}
+    face_ids2ray = {}
+    debug_segments = {}
     for ray_dir in intersections.keys():
         inters = sorted(intersections[ray_dir], key=lambda x: x[0])
         filtered_intersections[ray_dir] = [inters[0], inters[-1]]
+        # debug_segments[ray_dir] = [[np.zeros(3),inters[0][2]], [np.zeros(3), inters[-1][2]]]
+        debug_segments[ray_dir] = [np.zeros(3),inters[0][2]]
+        if inters[0][1] not in face_ids2ray.keys():
+            face_ids2ray[inters[0][1]] = []
+        if inters[-1][1] not in face_ids2ray.keys():
+            face_ids2ray[inters[-1][1]] = []
+        face_ids2ray[inters[0][1]].append(ray_dir)
+        face_ids2ray[inters[-1][1]].append(ray_dir)
 
-    return intersections, filtered_intersections
+    return intersections, filtered_intersections, face_ids2ray, debug_segments
 
 
 def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
@@ -122,9 +139,18 @@ def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
     img_sizes = []
     img_grids = []
     K_list = []
+    gt3dboxes = []
     filter_masks = []
+    scales = []
     for i,id_ in enumerate(ids):
         transforms.append(pkl_data[id_]['gt_RTs'][0])  # change to pred_RTs for predicted poses 
+        gtscales = pkl_data[id_]['gt_scales'][0]
+        scale_mat = np.eye(4)
+        # print(gtscales/2)
+        # scale_mat[:3,:3] = np.diag([gtscales[1], gtscales[1], gtscales[1]])
+        # scale_mat[:3,:3] = np.diag([0,0,0])
+        scales.append(gtscales)
+        gt3dboxes.append(pkl_data[id_]['gt_3d_box'])
         K_list.append(np.linalg.inv(pkl_data[id_]['K']))
         img_sizes.append(np.array(Image.open(image_list[id_])).shape)
         depth_img = np.array(Image.open(depth_list[id_]))
@@ -133,13 +159,26 @@ def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
         filter_masks.append(mask)
         # img_grids.append(np.mgrid[-img_sizes[i][0]//2:img_sizes[i][0]//2, -img_sizes[i][1]//2:img_sizes[i][1]//2].transpose(1,2,0))
         img_grids.append(np.mgrid[0:img_sizes[i][0], 0:img_sizes[i][1]].transpose(1,2,0))
+        # img_grids.append(np.mgrid[0:img_sizes[i][0], 0:img_sizes[i][1]])
         mesh_deltas = pkl_data[id_]['mesh_deltas'][0]  # (1,N,3)
         mean_deltas += mesh_deltas
     merged_mesh = merged_mesh + mean_deltas/len(ids)
 
     # TODO: check why the transformed mesh looks flipped
-    mesh1 = trimesh.Trimesh(vertices=merged_mesh, faces=base_faces).apply_transform(transforms[0])
-    mesh2 = trimesh.Trimesh(vertices=merged_mesh, faces=base_faces).apply_transform(transforms[1])
+    print(scales[0])
+    # mesh = trimesh.Trimesh(vertices=base_verts, faces=base_faces).apply_transform(scales[0])
+    # mesh_s = trimesh.Trimesh(vertices=base_verts, faces=base_faces)
+    merged_mesh1 = merged_mesh.copy()
+    merged_mesh1[:,0]*=scales[0][0]
+    merged_mesh1[:,1]*=scales[0][1]
+    merged_mesh1[:,2]*=scales[0][2]
+
+    merged_mesh2 = merged_mesh.copy()
+    merged_mesh2[:,0]*=scales[1][0]
+    merged_mesh2[:,1]*=scales[1][1]
+    merged_mesh2[:,2]*=scales[1][2]
+    mesh1 = trimesh.Trimesh(vertices=merged_mesh1, faces=base_faces).apply_transform(transforms[0])
+    mesh2 = trimesh.Trimesh(vertices=merged_mesh2, faces=base_faces).apply_transform(transforms[1])
 
     triangle_mesh1 = trimesh.ray.ray_pyembree.RayMeshIntersector(mesh1)
     triangle_mesh2 = trimesh.ray.ray_pyembree.RayMeshIntersector(mesh2)
@@ -148,10 +187,14 @@ def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
 
     # direction vectors for ray casting
     directions = []
+    filtered_grids = []
     for i in range(2):
         img_grids[i] = img_grids[i].reshape(-1,2)
         img_grids[i] = np.hstack((img_grids[i], np.ones((img_grids[i].shape[0], 1))))
-        img_grids[i] = img_grids[i][filter_masks[i].flatten()]
+        # filtered_grids.append(img_grids[i][filter_masks[i].flatten()])
+        # img_grids[i] = img_grids[i][filter_masks[i].flatten()]
+        filtered_grids.append(img_grids[i])
+        # img_grids[i] = img_grids[i][filter_masks[i].flatten()]
         dirs = (K_list[i] @ img_grids[i].T).T
         dirs = dirs / np.linalg.norm(dirs, axis=1).reshape(-1,1)
         directions.append(dirs)
@@ -160,12 +203,46 @@ def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
     idx_triangles1, idx_ray1, locs1 = triangle_mesh1.intersects_id(np.zeros_like(directions[0]), directions[0], return_locations=True)    
     idx_triangles2, idx_ray2, locs2 = triangle_mesh2.intersects_id(np.zeros_like(directions[1]), directions[1], return_locations=True)    
 
-    intersections1, f_intersections1 = handle_intersections(idx_triangles1, idx_ray1, locs1, directions[0])
-    intersections2, f_intersections2 = handle_intersections(idx_triangles2, idx_ray2, locs2, directions[1])
+    save_data = {
+        'origins' : np.zeros_like(directions[0]),
+        'directions' : directions[0],
+        'vertices' : mesh1.vertices,
+        'faces' : mesh1.faces,
+        'base_vertices' : base_verts,
+        'base_faces' : base_faces,
+        'masked_directions' : directions[0][filter_masks[0].flatten()]
+    }
+    np.save('raycast_data2.npy', save_data)
+
+    intersections1, f_intersections1, faceids2ray1, debug_segments1 = handle_intersections(idx_triangles1, idx_ray1, locs1, directions[0])
+    intersections2, f_intersections2, faceids2ray2, debug_segments2 = handle_intersections(idx_triangles2, idx_ray2, locs2, directions[1])
+    # print(faceids2ray1.keys())
+    # print(img_grids[i].shape)
+    # for idx in faceids2ray1.keys():
+    #     print(idx, len(faceids2ray1[idx]))
 
     if viz:
-        mesh1.show()
-        mesh2.show()
+        segments = []
+        for ray_id in debug_segments1.keys():
+            segments.append(np.array(debug_segments1[ray_id]))
+        segments = np.array(segments)
+        print(segments.shape)
+        # segments = np.random.random((100,2,3))
+        # print(segments)
+        p = trimesh.load_path(segments[::])
+        # # p.show()
+        # print(gt3dboxes[0].shape)
+        # p = trimesh.points.PointCloud(gt3dboxes[0].T)
+        # mesh.show()
+        # add colors to mesh in trimesh
+        # mesh.visual.vertex_colors = [0, 0, 255, 255]
+        # mesh.visual.face_colors = [0, 0, 255, 255]
+
+        # trimesh.Scene([mesh]).show()
+        trimesh.Scene([mesh1, p]).show()
+        # trimesh.Scene([mesh1, p]).show()
+        # mesh1.show()
+        # mesh2.show()
 
 
 def main(args):
@@ -176,7 +253,7 @@ def main(args):
 
     imgs_ids = [10, 230] # for camera sequence
 
-    virtual_correspondence(data, imgs_ids, base_verts, base_faces, viz=False)
+    virtual_correspondence(data, imgs_ids, base_verts, base_faces, viz=True)
     # fig = plt.figure()
     # ax = fig.add_subplot(projection='3d')
     # col_list = ['r', 'b', 'g', 'y', 'm', 'c']
