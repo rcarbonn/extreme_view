@@ -6,7 +6,7 @@ import _pickle as cPickle
 import os
 from PIL import Image
 import trimesh
-
+from scipy.spatial.transform import Rotation as sROT
 
 def calculate_2d_projections(coordinates_3d, intrinsics):
     """
@@ -24,7 +24,7 @@ def calculate_2d_projections(coordinates_3d, intrinsics):
     return projected_coordinates
 
 
-def load_mesh(path_to_file, rotx=True):
+def load_mesh(path_to_file, rotx=False):
     """ Load obj file.
     Args:
         path_to_file: path
@@ -50,9 +50,9 @@ def load_mesh(path_to_file, rotx=True):
     faces = np.asarray(faces)
     if rotx:
         Rx = np.array([
+            [0, 1, 0],
             [1, 0, 0],
-            [0, -1, 0],
-            [0, 0, -1],
+            [0, 0, 1],
         ])
         vertices = (Rx @ vertices.T).T
     print(f"Number of vertices: {len(vertices)}, Number of faces: {len(faces)}")
@@ -143,7 +143,7 @@ def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
     filter_masks = []
     scales = []
     for i,id_ in enumerate(ids):
-        transforms.append(pkl_data[id_]['gt_RTs'][0])  # change to pred_RTs for predicted poses 
+        transforms.append(pkl_data[id_]['gt_RTs'][0])  # change to pred_RTs for predicted poses
         gtscales = pkl_data[id_]['gt_scales'][0]
         scale_mat = np.eye(4)
         # print(gtscales/2)
@@ -169,16 +169,60 @@ def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
     # mesh = trimesh.Trimesh(vertices=base_verts, faces=base_faces).apply_transform(scales[0])
     # mesh_s = trimesh.Trimesh(vertices=base_verts, faces=base_faces)
     merged_mesh1 = merged_mesh.copy()
-    merged_mesh1[:,0]*=scales[0][0]
-    merged_mesh1[:,1]*=scales[0][1]
-    merged_mesh1[:,2]*=scales[0][2]
+    merged_mesh1[:,0]*=scales[0][0]/(merged_mesh1[:,0].max()-merged_mesh1[:,0].min())
+    merged_mesh1[:,1]*=scales[0][1]/(merged_mesh1[:,1].max()-merged_mesh1[:,1].min())
+    merged_mesh1[:,2]*=scales[0][2]/(merged_mesh1[:,2].max()-merged_mesh1[:,2].min())
+    merged_mesh1_ = np.hstack((merged_mesh1, np.ones((merged_mesh1.shape[0], 1))))
+    t1 = np.eye(4)
+    t1[:3,:3] = transforms[0][:3,:3].T   
+    # t1_ = np.eye(4)
+    # t1_[:3,:3] = np.array([[0,0,-1],[0,1,0],[1,0,0]])
+    # t1__ = np.eye(4)
+    # t1__[:3,:3] = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
+    # merged_mesh1_ = (t1 @ merged_mesh1_.T).T
+    # merged_mesh1_ = (t1 @ merged_mesh1_.T).T
+    # merged_mesh1_[:,1]*=-1
+    # merged_mesh1_[:,0]*=-1
+    # merged_mesh1_[:,2]*=-1
+    # merged_mesh1_[:,:3]+=transforms[0][:3,3]
 
     merged_mesh2 = merged_mesh.copy()
-    merged_mesh2[:,0]*=scales[1][0]
-    merged_mesh2[:,1]*=scales[1][1]
-    merged_mesh2[:,2]*=scales[1][2]
-    mesh1 = trimesh.Trimesh(vertices=merged_mesh1, faces=base_faces).apply_transform(transforms[0])
-    mesh2 = trimesh.Trimesh(vertices=merged_mesh2, faces=base_faces).apply_transform(transforms[1])
+    merged_mesh2[:,0]*=scales[1][0]/(merged_mesh2[:,0].max()-merged_mesh2[:,0].min())
+    merged_mesh2[:,1]*=scales[1][1]/(merged_mesh2[:,1].max()-merged_mesh2[:,1].min())
+    merged_mesh2[:,2]*=scales[1][2]/(merged_mesh2[:,2].max()-merged_mesh2[:,2].min())
+    merged_mesh2_ = np.hstack((merged_mesh2, np.ones((merged_mesh2.shape[0], 1))))
+    # t2 = np.eye(4)
+    # t2[:3,:3] = transforms[1][:3,:3].T
+    # merged_mesh2_ = (t2 @ merged_mesh2_.T).T
+    # merged_mesh2_[:,1]*=-1
+    # merged_mesh2_[:,0]*=-1
+    # merged_mesh2_[:,2]*=-1
+    merged_mesh2_[:,:3]-=transforms[1][:3,3]
+
+    print(transforms[0])
+    r = sROT.from_matrix(transforms[0][:3, :3])
+    r = r.as_euler('xyz', degrees=True)
+    print(r)
+    # transforms[0][:,3] = np.array([0,0,0,1])
+    # rotation about z axis by 90 degrees
+    r1 = np.array([[0,-1,0],[1,0,0],[0,0,1]])
+    # rotation about y axis by 90 degrees
+    # r2 = np.array([[0,0,1],[0,1,0],[-1,0,0]])
+    # rotation about x axis by 180 degrees
+    r3 = np.array([[1,0,0],[0,-1,0],[0,0,-1]])
+    r2 = np.array([[-1,0,0],[0,1,0],[0,0,1]])
+    r = r2 @ r3
+    t = np.eye(4)
+    t[:3,:3] = r
+    r3 = np.array([[-1,0,0],[0,-1,0],[0,0,1]])
+    t2 = np.eye(4)
+    # t2[:3,:3] = r3
+    mesh1 = trimesh.Trimesh(vertices=merged_mesh1, faces=base_faces).apply_transform( t2 @ transforms[0] @ t)
+    mesh2 = trimesh.Trimesh(vertices=merged_mesh2, faces=base_faces).apply_transform(transforms[1] @ t)
+    # mesh1 = trimesh.Trimesh(vertices=merged_mesh1, faces=base_faces)
+    # mesh2 = trimesh.Trimesh(vertices=merged_mesh2, faces=base_faces)
+    # mesh1 = trimesh.Trimesh(vertices=merged_mesh1_[:,:3], faces=base_faces)
+    # mesh2 = trimesh.Trimesh(vertices=merged_mesh2_[:,:3], faces=base_faces)
 
     triangle_mesh1 = trimesh.ray.ray_pyembree.RayMeshIntersector(mesh1)
     triangle_mesh2 = trimesh.ray.ray_pyembree.RayMeshIntersector(mesh2)
@@ -203,33 +247,54 @@ def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
     idx_triangles1, idx_ray1, locs1 = triangle_mesh1.intersects_id(np.zeros_like(directions[0]), directions[0], return_locations=True)    
     idx_triangles2, idx_ray2, locs2 = triangle_mesh2.intersects_id(np.zeros_like(directions[1]), directions[1], return_locations=True)    
 
-    save_data = {
-        'origins' : np.zeros_like(directions[0]),
-        'directions' : directions[0],
-        'vertices' : mesh1.vertices,
-        'faces' : mesh1.faces,
-        'base_vertices' : base_verts,
-        'base_faces' : base_faces,
-        'masked_directions' : directions[0][filter_masks[0].flatten()]
-    }
-    np.save('raycast_data2.npy', save_data)
 
-    intersections1, f_intersections1, faceids2ray1, debug_segments1 = handle_intersections(idx_triangles1, idx_ray1, locs1, directions[0])
-    intersections2, f_intersections2, faceids2ray2, debug_segments2 = handle_intersections(idx_triangles2, idx_ray2, locs2, directions[1])
-    # print(faceids2ray1.keys())
+    # intersections1, f_intersections1, faceids2ray1, debug_segments1 = handle_intersections(idx_triangles1, idx_ray1, locs1, directions[0])
+    # intersections2, f_intersections2, faceids2ray2, debug_segments2 = handle_intersections(idx_triangles2, idx_ray2, locs2, directions[1])
+
     # print(img_grids[i].shape)
     # for idx in faceids2ray1.keys():
     #     print(idx, len(faceids2ray1[idx]))
 
+    # face2pixel1 = {}
+    # face2pixel2 = {}
+    # for idx in faceids2ray1.keys():
+    #     face2pixel1[idx] = np.array([filtered_grids[0][ray_id].tolist() for ray_id in faceids2ray1[idx]])
+    #     face2pixel1[idx] = np.unique(face2pixel1[idx], axis=0)
+    # for idx in faceids2ray2.keys():
+    #     face2pixel2[idx] = np.array([filtered_grids[1][ray_id].tolist() for ray_id in faceids2ray2[idx]])
+    #     face2pixel2[idx] = np.unique(face2pixel2[idx], axis=0)
+    
+    # print(face2pixel1.keys())
+    # for k,v in face2pixel1.items():
+    #     print(k, v)
+
+    # save_data = {
+    #     'origins' : np.zeros_like(directions[0]),
+    #     'directions' : directions[0],
+    #     'vertices' : mesh1.vertices,
+    #     'faces' : mesh1.faces,
+    #     'base_vertices' : base_verts,
+    #     'base_faces' : base_faces,
+    #     'masked_directions' : directions[0][filter_masks[0].flatten()],
+    #     'raw_intersections1' : intersections1,
+    #     'raw_intersections2' : intersections2,
+    #     'filtered_intersections1' : f_intersections1,
+    #     'filtered_intersections2' : f_intersections2,
+    #     'face2pixel1' : face2pixel1,
+    #     'face2pixel2' : face2pixel2,
+    #     'img_ids' : ids
+    # }
+    # np.save('matching_data.npy', save_data)
+
     if viz:
-        segments = []
-        for ray_id in debug_segments1.keys():
-            segments.append(np.array(debug_segments1[ray_id]))
-        segments = np.array(segments)
-        print(segments.shape)
+        # segments = []
+        # for ray_id in debug_segments1.keys():
+        #     segments.append(np.array(debug_segments1[ray_id]))
+        # segments = np.array(segments)
+        # print(segments.shape)
         # segments = np.random.random((100,2,3))
         # print(segments)
-        p = trimesh.load_path(segments[::])
+        # p = trimesh.load_path(segments[::])
         # # p.show()
         # print(gt3dboxes[0].shape)
         # p = trimesh.points.PointCloud(gt3dboxes[0].T)
@@ -239,7 +304,11 @@ def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
         # mesh.visual.face_colors = [0, 0, 255, 255]
 
         # trimesh.Scene([mesh]).show()
-        trimesh.Scene([mesh1, p]).show()
+        mesh1.show()
+        mesh1.export('./tmeshes/2.obj')
+        mesh2.show()
+        mesh2.export('./tmeshes/2_.obj')
+        # trimesh.Scene([mesh2, p]).show()
         # trimesh.Scene([mesh1, p]).show()
         # mesh1.show()
         # mesh2.show()
@@ -252,6 +321,8 @@ def main(args):
     depth_mask_list = data['depth_mask_list']
 
     imgs_ids = [10, 230] # for camera sequence
+    # imgs_ids = [9, 164] # for mug sequence
+    # imgs_ids = [8, 225] # for laptop sequence
 
     virtual_correspondence(data, imgs_ids, base_verts, base_faces, viz=True)
     # fig = plt.figure()
