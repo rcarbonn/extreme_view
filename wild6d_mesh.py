@@ -7,6 +7,7 @@ import os
 from PIL import Image
 import trimesh
 from scipy.spatial.transform import Rotation as sROT
+from collections import OrderedDict
 
 def calculate_2d_projections(coordinates_3d, intrinsics):
     """
@@ -292,7 +293,7 @@ def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
         #     segments.append(np.array(debug_segments1[ray_id]))
         # segments = np.array(segments)
         # print(segments.shape)
-        # segments = np.random.random((100,2,3))
+        # segments = np.random.random((color_min,2colo)
         # print(segments)
         # p = trimesh.load_path(segments[::])
         # # p.show()
@@ -313,35 +314,143 @@ def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
         # mesh1.show()
         # mesh2.show()
 
+def filter_hits(filtered_intersections:dict):
+    """ Remove hits that are singular. 
+    Due to bad mesh quality, some hits are singular and are not useful for correspondence"""
+
+    new_filtered_intersections = {}
+    print("Length of filtered_intersections: ", len(filtered_intersections))
+    filtered_keys = [k for k,v in filtered_intersections.items() if not np.isclose(v[0][0], v[1][0])]
+
+    for k in filtered_keys:
+        new_filtered_intersections[k] = filtered_intersections[k]
+
+    print("Length of keys after filtering: ", len(filtered_keys))
+    return new_filtered_intersections
+
+def pair_ray_hits_to_vertex(matches, top_k = 3):
+    """ Find ray hits on the mesh. Assign each ray hit to the closest vertex on the face."""
+
+    vertex_mapping = {}
+
+    for view in ['1','2']:
+        vertex_mapping[view] = {}
+
+        faces = matches['faces'+view]
+        vertices = matches['vertices'+view]
+        filtered_intersections = matches['filtered_intersections'+view]
+
+        for ray_id in filtered_intersections.keys():
+            # print(ray_id)
+            face_id_entry = filtered_intersections[ray_id][0][1]
+            loc_entry = filtered_intersections[ray_id][0][2]
+            face_id_exit = filtered_intersections[ray_id][1][1]
+            loc_exit = filtered_intersections[ray_id][1][2]
+            
+            # find closest vertex entry and exit
+            vertices_loc_entry = vertices[faces[face_id_entry]]
+            dists_entry = np.linalg.norm(vertices_loc_entry - loc_entry, axis=1)
+            closest_vertex_entry = faces[face_id_entry][np.argmin(dists_entry)]
+
+            vertices_loc_exit = vertices[faces[face_id_exit]]
+            dists_exit = np.linalg.norm(vertices_loc_exit - loc_exit, axis=1)
+            closest_vertex_exit = faces[face_id_exit][np.argmin(dists_exit)]
+
+            print("Closest vertex entry: ", closest_vertex_entry)
+            print("Closest vertex exit: ", closest_vertex_exit)
+
+            if closest_vertex_entry not in vertex_mapping[view].keys():
+                vertex_mapping[view][closest_vertex_entry] = []
+
+            if closest_vertex_exit not in vertex_mapping[view].keys():
+                vertex_mapping[view][closest_vertex_exit] = []
+
+            vertex_mapping[view][closest_vertex_entry].append([ray_id, dists_entry[np.argmin(dists_entry)]])
+            vertex_mapping[view][closest_vertex_exit].append([ray_id, dists_exit[np.argmin(dists_exit)]])
+
+        # Sort the ray hits based on distance to each vertex
+        for vertex in vertex_mapping[view].keys():
+            vertex_mapping[view][vertex] = sorted(vertex_mapping[view][vertex], key=lambda x: x[1])[:top_k]
+
+    return vertex_mapping
+
+def find_pixel_correspondences(matches, vertex_ray_mapping, mode='hard_select'):
+    """ Uses precomputed vertex ray pairs and uses them to find pixel correspondences"""
+    view1 = '1'
+    view2 = '2'
+    ray_correspondences = []
+    pixel_correspondences = []
+    ray_pixel1 = matches['ray_pixel1']
+    ray_pixel2 = matches['ray_pixel2'] 
+
+    for vertex in vertex_ray_mapping[view1].keys():
+        if vertex not in vertex_ray_mapping[view2].keys():
+            print(" No corresponding vertex found in view 2 for {}".format(vertex))
+            continue
+        else:
+            # store all pairs of ray ids. Assuming they are equally good
+            if mode == 'hard_select':
+                ray_id1 = vertex_ray_mapping[view1][vertex][0][0]
+                ray_id2 = vertex_ray_mapping[view2][vertex][0][0]
+                ray_correspondences.append([ray_id1, ray_id2])
+                pixel_correspondences.append([ray_pixel1[ray_id1], ray_pixel2[ray_id2]])
+                print("Vertex: {} Ray_id1: {} Ray_id2: {}".format(vertex, ray_id1, ray_id2))
+            elif mode == 'all':
+                for ray_id1, _ in vertex_ray_mapping[view1][vertex]:
+                    for ray_id2, _ in vertex_ray_mapping[view2][vertex]:
+                        ray_correspondences.append([ray_id1, ray_id2])
+                        pixel_correspondences.append([ray_pixel1[ray_id1], ray_pixel2[ray_id2]])
+
+    return ray_correspondences, pixel_correspondences
+
+def load_matches(filename):
+    """ Load precomputed matches from file"""
+    view_data = OrderedDict()
+    matches = np.load(filename, allow_pickle=True).item()
+    matches['filtered_intersections1'] = filter_hits(matches['filtered_intersections1'])
+    matches['filtered_intersections2'] = filter_hits(matches['filtered_intersections2'])
+
+    return matches
+
+def draw_correspondences(img1, img2, pixel_correspondences):
+    """ Draw correspondences between two images"""
+    # make colors list of 20 colors
+    color_min = 100
+    color_max = 255
+    COLORS = [(np.random.randint(color_min, color_max), np.random.randint(color_min, color_max), np.random.randint(color_min, color_max)) for _ in range(20)]
+    for i in range(len(pixel_correspondences)):
+        u1,v1,_ = pixel_correspondences[i][0]
+        u2,v2,_ = pixel_correspondences[i][1]
+        cv2.circle(img1, (int(u1),int(v1)), 2, COLORS[i%20], -1)
+        cv2.circle(img2, (int(u2),int(v2)), 2, COLORS[i%20], -1)
+
+    cv2.imshow('img1', img1)
+    cv2.imshow('img2', img2)
+    cv2.waitKey(0)
 
 def main(args):
     data = load_data(args.data_dir, args.object)
+    filename1 = 'matching_data_camera2.npy'
+    matches= load_matches(filename1)
     base_verts, base_faces = data['mesh_data']
     depth_list = data['depth_list']
     depth_mask_list = data['depth_mask_list']
+
+    vertex_ray_mapping = pair_ray_hits_to_vertex(matches,top_k=1)
+    ray_pairs,pixel_pairs = find_pixel_correspondences(matches, vertex_ray_mapping)
+
+    print(np.array(pixel_pairs).shape)
 
     imgs_ids = [10, 230] # for camera sequence
     # imgs_ids = [9, 164] # for mug sequence
     # imgs_ids = [8, 225] # for laptop sequence
 
-    virtual_correspondence(data, imgs_ids, base_verts, base_faces, viz=True)
-    # fig = plt.figure()
-    # ax = fig.add_subplot(projection='3d')
-    # col_list = ['r', 'b', 'g', 'y', 'm', 'c']
-    # merged_mesh = base_verts.copy()
-    # mean_deltas = np.zeros_like(base_verts)
-    # gtRTs = []
-    # depth_img = np.array(Image.open(depth_list[id_]))
-    # depth_mask = np.array(Image.open(depth_mask_list[id_]))
-    # mask = depth_mask > 0
-    # depth_data = depth_img[mask]
-    # ax.scatter(gt_3d_box[0, :], gt_3d_box[1,:], gt_3d_box[2,:], c=col_list[i], marker='o')
-    
-    # ax.scatter([0], [0], [0], c='k', marker='o', s=10)
-    # ax.set_xlabel('X')
-    # ax.set_ylabel('Y')
-    # ax.set_zlabel('Z')
-    # plt.show()
+    img1 = cv2.imread('/home/abhinav/extreme_view/data/camera/raw/images/9.jpg')
+    img2 = cv2.imread('/home/abhinav/extreme_view/data/camera/raw/images/229.jpg')
+
+    draw_correspondences(img1, img2, pixel_pairs)
+
+
 
 
 
