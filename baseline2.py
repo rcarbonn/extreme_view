@@ -5,12 +5,26 @@ import _pickle as cPickle
 import os
 import matplotlib.pyplot as plt
 from wild6d_mesh import virtual_correspondence, load_data as load_vc_data
+from PIL import Image
 
+colors = [
+    np.array([255, 0, 0]),   # Red
+    np.array([0, 255, 0]),   # Green
+    np.array([0, 0, 255]),   # Blue
+    np.array([255, 255, 0]), # Yellow
+    np.array([255, 0, 255]), # Magenta
+    np.array([0, 255, 255]), # Cyan
+    np.array([128, 0, 0]),  # Maroon
+    np.array([0, 128, 0]),  # Green (darker shade)
+    np.array([0, 0, 128]),  # Navy
+    np.array([128, 128, 0]) # Olive
+]
 
 def load_data(data_dir, object_type):
     image_path = os.path.join(data_dir, object_type, 'raw', 'images')
+    # image_path = os.path.join(data_dir, object_type, 'results2', 'vis')
     wild6d_result_path = os.path.join(data_dir, object_type, 'results2')
-    image_list = [os.path.join(image_path, f) for f in os.listdir(image_path)]
+    image_list = sorted([os.path.join(image_path, f) for f in os.listdir(image_path) if ".jpg" in f], key=lambda x: int(x.split('/')[-1].split('.')[0]))
     pkl_list = sorted([os.path.join(wild6d_result_path, f) for f in os.listdir(wild6d_result_path) if '.pkl' in f])
     pkl_data = [cPickle.load(open(pkl, 'rb')) for pkl in pkl_list]
     data = {
@@ -24,6 +38,14 @@ def generate_random_pairs(num_pairs, min_val=1, max_val=200):
     pairs = []
     for i in range(num_pairs):
         pairs.append(np.random.randint(min_val, max_val, size=2))
+    return np.array(pairs)
+
+def generate_random_pairs2(num_pairs, min_val=1, max_val=200):
+    pairs = []
+    for i in range(num_pairs):
+        j = np.random.randint(min_val, min_val+20, size=1)
+        k = np.random.randint(max_val-20, max_val, size=1)
+        pairs.append([*j,*k])
     return np.array(pairs)
 
 def generate_seq_pairs(num_pairs, min_val=1, max_val=200):
@@ -145,8 +167,8 @@ def relative_pose(data1, data2):
 
 def relative_rotation(R1, R2):
     # return np.linalg.inv(R2) @ R1
-    return np.linalg.inv(R1) @ R2
-    # return R1 @ np.linalg.inv(R2)
+    # return np.linalg.inv(R1) @ R2
+    return R2 @ np.linalg.inv(R1)
 
 def compute_rotation_error(sRT_1, sRT_2):
     R1 = sRT_1[:3, :3] / np.cbrt(np.linalg.det(sRT_1[:3, :3]))
@@ -165,8 +187,22 @@ def compute_rotation_error(sRT_1, sRT_2):
 
     return theta
 
+def sim_normalized_points(pts):
+    x_centroid, y_centroid = np.mean(pts[:, :2], axis=0)
+    d_avg = np.mean(np.linalg.norm(pts[:, :2] - np.array([x_centroid, y_centroid]), axis=1))
+    s = np.sqrt(2) / d_avg
+
+    T_mat = np.array([
+        [s, 0, - s * x_centroid],
+        [0, s, - s * y_centroid],
+        [0, 0, 1]
+    ])
+
+    normalized_pts = (T_mat @ pts.T).T
+    return T_mat, normalized_pts
+
 # def vc_pose(match_data1, K):
-def vc_pose(fp1, fp2, K):
+def vc_pose(fp1, fp2, K, image_list=None):
     faces1 = set(list(fp1.keys()))
     faces2 = set(list(fp2.keys()))
     common_faces = faces1.intersection(faces2)
@@ -179,32 +215,70 @@ def vc_pose(fp1, fp2, K):
         px2 = fp2[fid]
         view1.append(px1.mean(axis=0))
         view2.append(px2.mean(axis=0))
-    view1 = np.array(view1)[:, :2][:, np.newaxis, :]
-    view2 = np.array(view2)[:, :2][:, np.newaxis, :]
+    view1 = np.array(view1)
+    view2 = np.array(view2)
+    T_mat1, sim_points1 = sim_normalized_points(view1)
+    T_mat2, sim_points2 = sim_normalized_points(view2)
 
-    F, mask = cv2.findFundamentalMat(view2, view1, method=cv2.USAC_ACCURATE)
-    E = K.T @ F @ K
-    retval, R, t, mask = cv2.recoverPose(E, view2, view1, cameraMatrix=K)
+
+    F, mask = cv2.findFundamentalMat(sim_points1, sim_points2, method=cv2.RANSAC, ransacReprojThreshold=1e-3)
+    # F, mask = cv2.findFundamentalMat(sim_points1, sim_points2, method=cv2.RANSAC, ransacReprojThreshold=1e-3)
+
+    F = T_mat2.T @ F @ T_mat1
 
     inlier_points1 = view1[mask.ravel() == 1]
     inlier_points2 = view2[mask.ravel() == 1]
-
     print (view1.shape, view2.shape)
+    print (sim_points1.shape, sim_points2.shape)
     print (inlier_points1.shape, inlier_points2.shape)
-    print (F)
+    print(F)
+    # F, mask = cv2.findFundamentalMat(view2, view1, method=cv2.USAC_ACCURATE)
+    E = K.T @ F @ K
+    retval, R, t, mask = cv2.recoverPose(E, inlier_points2[:,:2].astype(np.float32), inlier_points1[:,:2].astype(np.float32), cameraMatrix=K)
+
+    im1 = cv2.imread(image_list[0])
+    im2 = cv2.imread(image_list[1])
+
+    # for i, (p1, p2) in enumerate(zip(inlier_points1, inlier_points2)):
+    #     im1 = cv2.circle(im1, p1[:2].astype(int), 1, colors[i%len(colors)].tolist(), 5)
+    #     im2 = cv2.circle(im2, p2[:2].astype(int), 1, colors[i%len(colors)].tolist(), 5)
+    #     if i == 20:
+    #         break
+    # fig = plt.figure()
+    # ax1 = fig.add_subplot(121)
+    # ax2 = fig.add_subplot(122)
+    # ax1.imshow(im1)
+    # ax2.imshow(im2)
+    # plt.show()
+    # cv2.imshow("Image 1", im1)
+    # cv2.imshow("Image 2", im2)
+    # cv2.waitKey(0)
+
+    # fig = plt.figure()
+    # ax1 = fig.add_subplot(211)
+    # ax2 = fig.add_subplot(212)
+    # if image_list is not None:
+    #     img1 = ax1.imshow(np.array(Image.open(image_list[0])))
+    #     img2 = ax2.imshow(np.array(Image.open(image_list[1])))
+    # plt.show()
+
+    # print (view1.shape, view2.shape)
+    # print (inlier_points1.shape, inlier_points2.shape)
+    # print (F)
     return R
 
 def main(args):
     data = load_data(args.data_dir, args.object)
     data_vc = load_vc_data(args.data_dir, args.object)
-    rand_pairs = generate_random_pairs(100, max_val=len(data['pkl_data']))
+    rand_pairs = generate_random_pairs2(100, max_val=len(data['pkl_data']))
     base_verts, base_faces = data_vc['mesh_data']
     # rand_pairs = generate_seq_pairs(len(data['pkl_data']))
     errs = []
+    # rand_pairs = np.array([[10, 230]])
     for p in rand_pairs[:,:]:
         R_pred, R_gt_proj = relative_pose(data['pkl_data'][p[0]], data['pkl_data'][p[1]])
         fp1, fp2 = virtual_correspondence(data_vc, [p[0], p[1]], base_verts, base_faces, viz=False)
-        R_vc = vc_pose(fp1, fp2, data['pkl_data'][p[0]]['K'])
+        R_vc = vc_pose(fp1, fp2, data['pkl_data'][p[0]]['K'], [data['image_list'][p[0]], data['image_list'][p[1]]])
         gt_RTs_0 = data['pkl_data'][p[0]]['gt_RTs']
         gt_RTs_1 = data['pkl_data'][p[1]]['gt_RTs']
         pred_RTs_0 = data['pkl_data'][p[0]]['pred_RTs']
@@ -216,9 +290,9 @@ def main(args):
         err3 = compute_rotation_error(R_preds, R_gt)
         err4 = compute_rotation_error(R_vc, R_gt)
         errs.append([err1, err2, err3, err4])
-        print("Rotation error with predicions :: {:.3f} \t \
-               Rotation error with gt :: {:.3f} \t \
-               Rotation error baseline 1 :: {:.3f} \t \
+        print("Rotation error with 8 pt predicions :: {:.3f} \t \
+               Rotation error with 8 pt gt :: {:.3f} \t \
+               Rotation error with direct pred :: {:.3f} \t \
                 Rotation error vc :: {:.3f}".format(err1, err2, err3, err4))
     errs = np.array(errs)
     print(np.mean(errs[:,3]))
@@ -235,3 +309,66 @@ if __name__ == '__main__':
     ap.add_argument('-o', '--object', choices=['bottle', 'bowl', 'camera', 'can', 'laptop', 'mug'],default='camera', help='Object set to use')
     args = ap.parse_args()
     main(args)
+
+
+
+
+# match_data1 = np.load('/home/amahapat/argo/tandon/wild/data/matching_data/matching_data2.npy', allow_pickle=True).item()
+# print (match_data1['img_ids'])
+# # print (type(match_data1['face2pixel1']), type(match_data1['face2pixel2'])
+
+# faces1 = set(list(match_data1['face2pixel1'].keys()))
+# faces2 = set(list(match_data1['face2pixel2'].keys()))
+# common_faces = faces1.intersection(faces2)
+
+# view1 = []
+# view2 = []
+
+# for fid in common_faces:
+#     px1 = match_data1['face2pixel1'][fid]
+#     px2 = match_data1['face2pixel2'][fid]
+#     view1.append(px1.mean(axis=0))
+#     view2.append(px2.mean(axis=0))
+# view1 = np.array(view1)
+# view2 = np.array(view2)
+
+# T_mat1, sim_points1 = sim_normalized_points(view1)
+# T_mat2, sim_points2 = sim_normalized_points(view2)
+
+
+# F, mask = cv2.findFundamentalMat(sim_points1, sim_points2, method=cv2.RANSAC, ransacReprojThreshold=1e-3)
+
+# F = T_mat2.T @ F @ T_mat1
+
+# inlier_points1 = view1[mask.ravel() == 1]
+# inlier_points2 = view2[mask.ravel() == 1]
+
+# print (view1.shape, view2.shape)
+# print (sim_points1.shape, sim_points2.shape)
+# print (inlier_points1.shape, inlier_points2.shape)
+# print (F)
+
+
+# im1 = cv2.imread(r'/home/amahapat/argo/tandon/wild/data/camera/raw/images/9.jpg')
+# im2 = cv2.imread(r'/home/amahapat/argo/tandon/wild/data/camera/raw/images/229.jpg')
+# colors = [
+#     np.array([255, 0, 0]),   # Red
+#     np.array([0, 255, 0]),   # Green
+#     np.array([0, 0, 255]),   # Blue
+#     np.array([255, 255, 0]), # Yellow
+#     np.array([255, 0, 255]), # Magenta
+#     np.array([0, 255, 255]), # Cyan
+#     np.array([128, 0, 0]),  # Maroon
+#     np.array([0, 128, 0]),  # Green (darker shade)
+#     np.array([0, 0, 128]),  # Navy
+#     np.array([128, 128, 0]) # Olive
+# ]
+
+# for i, (p1, p2) in enumerate(zip(inlier_points1, inlier_points2)):
+#     im1 = cv2.circle(im1, p1[:2].astype(int), 5, colors[i%len(colors)].tolist(), 5)
+#     im2 = cv2.circle(im2, p2[:2].astype(int), 5, colors[i%len(colors)].tolist(), 5)
+#     if i == 20:
+#         break
+
+# cv2.imwrite('/home/amahapat/argo/tandon/wild/render/im1.jpg', im1)
+# cv2.imwrite('/home/amahapat/argo/tandon/wild/render/im2.jpg', im2)

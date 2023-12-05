@@ -143,10 +143,10 @@ def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
     filter_masks = []
     scales = []
     for i,id_ in enumerate(ids):
-        transforms.append(pkl_data[id_]['gt_RTs'][0])  # change to pred_RTs for predicted poses
-        gtscales = pkl_data[id_]['gt_scales'][0]
-        # transforms.append(pkl_data[id_]['pred_RTs'][0])  # change to pred_RTs for predicted poses
-        # gtscales = pkl_data[id_]['pred_scales'][0]
+        # transforms.append(pkl_data[id_]['gt_RTs'][0])  # change to pred_RTs for predicted poses
+        # gtscales = pkl_data[id_]['gt_scales'][0]
+        transforms.append(pkl_data[id_]['pred_RTs'][0])  # change to pred_RTs for predicted poses
+        gtscales = pkl_data[id_]['pred_scales'][0]
         scale_mat = np.eye(4)
         # print(gtscales/2)
         # scale_mat[:3,:3] = np.diag([gtscales[1], gtscales[1], gtscales[1]])
@@ -167,7 +167,7 @@ def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
     merged_mesh = merged_mesh + mean_deltas/len(ids)
 
     # TODO: check why the transformed mesh looks flipped
-    print(scales[0])
+    # print(scales[0])
     # mesh = trimesh.Trimesh(vertices=base_verts, faces=base_faces).apply_transform(scales[0])
     # mesh_s = trimesh.Trimesh(vertices=base_verts, faces=base_faces)
     merged_mesh1 = merged_mesh.copy()
@@ -201,10 +201,8 @@ def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
     # merged_mesh2_[:,2]*=-1
     merged_mesh2_[:,:3]-=transforms[1][:3,3]
 
-    print(transforms[0])
     r = sROT.from_matrix(transforms[0][:3, :3])
     r = r.as_euler('xyz', degrees=True)
-    print(r)
     # transforms[0][:,3] = np.array([0,0,0,1])
     # rotation about z axis by 90 degrees
     r1 = np.array([[0,-1,0],[1,0,0],[0,0,1]])
@@ -215,7 +213,7 @@ def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
     r2 = np.array([[-1,0,0],[0,1,0],[0,0,1]]) # regquired by gt
     r = r2 @ r3
     t = np.eye(4)
-    t[:3,:3] = r
+    # t[:3,:3] = r
     r3 = np.array([[-1,0,0],[0,-1,0],[0,0,1]])
     t2 = np.eye(4)
     # t2[:3,:3] = r3
@@ -266,8 +264,8 @@ def virtual_correspondence(data, ids, base_verts, base_faces, viz=False):
         face2pixel2[idx] = np.array([filtered_grids[1][ray_id].tolist() for ray_id in faceids2ray2[idx]])
         face2pixel2[idx] = np.unique(face2pixel2[idx], axis=0)
     
-    print(face2pixel1.keys())
-    print(face2pixel2.keys())
+    # print(face2pixel1.keys())
+    # print(face2pixel2.keys())
     return face2pixel1, face2pixel2
     
     # print(face2pixel1.keys())
