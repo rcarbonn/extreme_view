@@ -228,10 +228,10 @@ def vc_pose(fp1, fp2, K, image_list=None):
 
     inlier_points1 = view1[mask.ravel() == 1]
     inlier_points2 = view2[mask.ravel() == 1]
-    print (view1.shape, view2.shape)
-    print (sim_points1.shape, sim_points2.shape)
-    print (inlier_points1.shape, inlier_points2.shape)
-    print(F)
+    # print (view1.shape, view2.shape)
+    # print (sim_points1.shape, sim_points2.shape)
+    # print (inlier_points1.shape, inlier_points2.shape)
+    # print(F)
     # F, mask = cv2.findFundamentalMat(view2, view1, method=cv2.USAC_ACCURATE)
     E = K.T @ F @ K
     retval, R, t, mask = cv2.recoverPose(E, inlier_points2[:,:2].astype(np.float32), inlier_points1[:,:2].astype(np.float32), cameraMatrix=K)
@@ -239,11 +239,11 @@ def vc_pose(fp1, fp2, K, image_list=None):
     im1 = cv2.imread(image_list[0])
     im2 = cv2.imread(image_list[1])
 
-    # for i, (p1, p2) in enumerate(zip(inlier_points1, inlier_points2)):
-    #     im1 = cv2.circle(im1, p1[:2].astype(int), 1, colors[i%len(colors)].tolist(), 5)
-    #     im2 = cv2.circle(im2, p2[:2].astype(int), 1, colors[i%len(colors)].tolist(), 5)
-    #     if i == 20:
-    #         break
+    for i, (p1, p2) in enumerate(zip(inlier_points1, inlier_points2)):
+        im1 = cv2.circle(im1, p1[:2].astype(int), 1, colors[i%len(colors)].tolist(), 5)
+        im2 = cv2.circle(im2, p2[:2].astype(int), 1, colors[i%len(colors)].tolist(), 5)
+        if i == 9:
+            break
     # fig = plt.figure()
     # ax1 = fig.add_subplot(121)
     # ax2 = fig.add_subplot(122)
