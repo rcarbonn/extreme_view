@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from wild6d_mesh import virtual_correspondence
 from utils import *
 from PIL import Image
+from scipy import stats
 
 colors = [
     np.array([255, 0, 0]),   # Red
@@ -119,47 +120,95 @@ def eval_virtual_correspondence(data, id1, id2, pred_type='gt', viz=False):
     F = T_mat2.T @ F @ T_mat1
     inlier_points1 = view1[mask.ravel() == 1]
     inlier_points2 = view2[mask.ravel() == 1]
+    print(K)
 
     E = K.T @ F @ K
     retval, R_vc, t_vc, mask = cv2.recoverPose(E, inlier_points2[:,:2].astype(np.float32), inlier_points1[:,:2].astype(np.float32), cameraMatrix=K)
 
     if viz:
-        img1 = data['image_list'][id1]
-        img2 = data['image_list'][id2]
-        im1 = cv2.imread(img1)
-        im2 = cv2.imread(img2)
+        img1 = np.array(Image.open(data['image_list'][id1]))
+        img2 = np.array(Image.open(data['image_list'][id2]))
+        # make_matching_plot(img1, img2, inlier_points1[:,:2], inlier_points2[:,:2], inlier_points1[:,:2], inlier_points2[:,:2],'./results/camera/{}_{}'.format(id1,id2))
+        visualize_correspondences(img1, img2, inlier_points1[:,:2][::3], inlier_points2[:,:2][::3], './results/camera/gt_seq/{}_{}'.format(id1,id2))
+        # img1 = data['image_list'][id1]
+        # img2 = data['image_list'][id2]
+        # im1 = cv2.imread(img1)
+        # im2 = cv2.imread(img2)
 
-        for i, (p1, p2) in enumerate(zip(inlier_points1, inlier_points2)):
-            im1 = cv2.circle(im1, p1[:2].astype(int), 1, colors[i%len(colors)].tolist(), 5)
-            im2 = cv2.circle(im2, p2[:2].astype(int), 1, colors[i%len(colors)].tolist(), 5)
-            if i == 9:
-                break
-        fig = plt.figure()
-        ax1 = fig.add_subplot(121)
-        ax2 = fig.add_subplot(122)
-        ax1.imshow(im1)
-        ax2.imshow(im2)
-        plt.show()
+        # for i, (p1, p2) in enumerate(zip(inlier_points1, inlier_points2)):
+        #     im1 = cv2.circle(im1, p1[:2].astype(int), 1, colors[i%len(colors)].tolist(), 5)
+        #     im2 = cv2.circle(im2, p2[:2].astype(int), 1, colors[i%len(colors)].tolist(), 5)
+        #     if i == 9:
+        #         break
+        # fig = plt.figure()
+        # ax1 = fig.add_subplot(121)
+        # ax2 = fig.add_subplot(122)
+        # ax1.imshow(im1)
+        # ax2.imshow(im2)
+        # plt.show()
 
     return R_vc, t_vc
 
 
-def plot_errors(errs):
-    errs = np.array(errs)
-    print(np.mean(errs[:,3]))
-    errs_b1 = errs[:,3]
-    errs_b1 = errs_b1[errs_b1 < 80]
-    print(np.mean(errs_b1))
-    plt.hist(errs[:,3])
+def plot_errors(errs, args):
+    err_baseline1 = np.array(errs['baseline1'])
+    err_baseline2 = np.array(errs['baseline2'])
+    err_vc = np.array(errs['rot_err_vc'])
+    OUTLIER_THRESH = 80
+    err_baseline1 = err_baseline1[err_baseline1 < OUTLIER_THRESH]
+    err_baseline2 = err_baseline2[err_baseline2 < OUTLIER_THRESH]
+    err_vc = err_vc[err_vc < OUTLIER_THRESH]
+    kde1 = stats.gaussian_kde(err_baseline1)
+    kde2 = stats.gaussian_kde(err_baseline2)
+    kde3 = stats.gaussian_kde(err_vc)
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.hist(err_baseline1, bins=30, alpha=0.5, density=True, label='baseline1')
+    ax.hist(err_baseline2, bins=30, alpha=0.5, density=True, label='baseline2')
+    ax.hist(err_vc, bins=20, alpha=0.5, density=True, label='virtual correspondence')
+    ax.set_xlabel('Rotation Error (degrees)')
+    ax.set_ylabel('Count')
+    ax.set_title('Rotation Error -- {}'.format(args.object))
+    ax.legend()
+
+    fig2 = plt.figure()
+    ax2 = fig2.add_subplot(111)
+    x = np.linspace(0, OUTLIER_THRESH, 1000)
+    ax2.plot(x,kde1(x), label='baseline1')
+    ax2.plot(x,kde2(x), label='baseline2')
+    ax2.plot(x,kde3(x), label='virtual correspondence')
+    ax2.set_xlabel('Rotation Error (degrees)')
+    ax2.set_ylabel('Density')
+    ax2.set_title('Rotation Error -- {}'.format(args.object))
+    ax2.legend()
+
+    aucs1 = rot_auc(err_baseline1)
+    aucs2 = rot_auc(err_baseline2)
+    aucs3 = rot_auc(err_vc)
+    print('Evaluation Results (mean over {} image pairs -- {}):'.format(100, args.object))
+    print('AUC@10\t AUC@20\t AUC@30\t Mean\t -- ResultType')
+    print('{:.2f}\t {:.2f}\t {:.2f}\t {:.2f}\t -- Baseline1'.format(
+        aucs1[0], aucs1[1], aucs1[2], np.mean(err_baseline1)))
+    print('{:.2f}\t {:.2f}\t {:.2f}\t {:.2f}\t -- Baseline2'.format(
+        aucs2[0], aucs2[1], aucs2[2], np.mean(err_baseline2)))
+    print('{:.2f}\t {:.2f}\t {:.2f}\t {:.2f}\t -- Ours(VC)'.format(
+        aucs3[0], aucs3[1], aucs3[2], np.mean(err_vc)))
+
     plt.show()
-    pass
 
 def main(args):
 
     data = load_data(args.data_dir, args.object)
 
-    rand_pairs = generate_random_pairs2(100, max_val=len(data['pkl_data']))
-    rand_pairs = np.array([[10, 230]]) # test for camera dataset
+    if args.rand_list:
+        rand_pairs = np.load('./rand_list.npy')
+    else:
+        # rand_pairs = generate_random_pairs2(args.num_samples, max_val=len(data['pkl_data']))
+        rand_pairs = generate_seq_pairs(300, max_val=len(data['pkl_data']))
+        np.save('seq_list_new.npy', rand_pairs)
+
+    
+    # rand_pairs = np.array([[10, 230]]) # test for camera dataset
 
     errs = {
         'baseline1' : [], # direct R.T @ R between two frames
@@ -168,7 +217,7 @@ def main(args):
         'rot_err_vc' : [], # rotation error between virtual_corr and gt
     }
 
-    for p in rand_pairs[:,:]:
+    for p in rand_pairs[:1,:]:
 
         R_pred, R_gt_proj = relative_pose(data['pkl_data'][p[0]], data['pkl_data'][p[1]])
 
@@ -203,12 +252,12 @@ def main(args):
 
         # print("Error for pair {} :: {:.3f} \t {:.3f} \t {:.3f} \t {:.3f}".format(p, err1, err2, err3, err4))
 
-        print("Rotation errors::  direct pred RTR -> {:.3f} \t \
+        print("Rotation errors for {} ::  direct pred RTR -> {:.3f} \t \
                from Emat -> {:.3f} \t \
                b/w GT -> {:.3f} \t \
-                Virtual Corr -> {:.3f}".format(err1, err2, err3, err4))
+                Virtual Corr -> {:.3f}".format(p, err1, err2, err3, err4))
     
-    # plot_errors(errs)
+    plot_errors(errs, args)
 
 
 if __name__ == '__main__':
@@ -217,5 +266,6 @@ if __name__ == '__main__':
     ap.add_argument('-o', '--object', choices=['bottle', 'bowl', 'camera', 'can', 'laptop', 'mug'],default='camera', help='Object set to use')
     ap.add_argument('-p', '--pred_type', choices=['gt', 'pred'], default='gt', help='Transforms to use')
     ap.add_argument('-n', '--num_samples', default=100, help='Transforms to use')
+    ap.add_argument('-r', '--rand_list', default=False, help='Transforms to use')
     args = ap.parse_args()
     main(args)

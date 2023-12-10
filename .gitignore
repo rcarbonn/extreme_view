@@ -1,2 +1,6 @@
+**/__pycache__/**
 tmp/
 data/
+*.npy
+logs/
+results/
